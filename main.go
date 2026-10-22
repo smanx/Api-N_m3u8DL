@@ -44,20 +44,38 @@ func stripAnsi(s string) string {
 //	Cookie: a=1                                     （推荐，最自然）
 //	Cookie: a=1\nUser-Agent: iOS                    （每行一个）
 //	Cookie: a=1; User-Agent: iOS                    （分号分隔）
+//	{"Cookie":"a=1","User-Agent":"iOS"}             （JSON 对象）
+//	[{"name":"Cookie","value":"a=1"}]               （JSON 数组，含 name/value 字段）
+//	["Cookie: a=1","User-Agent: iOS"]               （JSON 数组，整串 Name: Value）
 //	-H "Cookie: a=1" -H "User-Agent: iOS"           （照官方示例写，容忍）
 //	-H "Cookie: a=1" -H User-Agent: iOS             （少引号）
 //
 // 归一化规则：
+//   - JSON 先整体反序列化，不走下面的文本拆分（JSON 里的分号、引号、
+//     换行都是内容，按文本拆会把值拆坏）
 //   - 按换行 / 分号 / " -H " 拆分成独立的头
 //   - 去掉成对的单/双引号
 //   - 丢掉 "-H" / "--header" 前缀
 //   - 只保留含冒号且看起来像 "Name: Value" 的条目
 func splitHeaders(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
 		return nil
 	}
 
-	// 先按行/分号拆，再把每段里连续的 -H 拆开（用户可能把多个头写在一行）
+	// JSON 写法：首字符是 { 或 [ 且整串是合法 JSON 时，走 JSON 分支。
+	// 用 json.Valid 而不是"能不能 unmarshal 成 map"来判断，是为了把
+	// {Cookie: a=1} 这种坏 JSON 交给下面的文本拆分（首字符满足但非法）。
+	//
+	// 注意：解析成功但提不出有效头（如 {}、{"Cookie":123}）时同样走 JSON
+	// 分支并返回空，不再回退文本拆分——否则 {"Cookie":123} 会被文本逻辑
+	// 在花括号里抓到冒号，把整串 JSON 当成一个非法头传下去。
+	if raw[0] == '{' || raw[0] == '[' {
+		if isJSON(raw) {
+			return parseJSONHeaders(raw)
+		}
+	}
+
 	var out []string
 	for _, chunk := range strings.FieldsFunc(raw, func(r rune) bool {
 		return r == '\n' || r == '\r' || r == ';'
@@ -95,6 +113,87 @@ func splitHeaders(raw string) []string {
 		}
 	}
 	return out
+}
+
+// parseJSONHeaders 解析 JSON 形式的请求头输入，支持两种形态：
+//
+//	{"Cookie":"a=1","User-Agent":"iOS"}                 对象：key 即头名
+//	[{"name":"Cookie","value":"a=1"}, ...]              数组：显式 name/value
+//	["Cookie: a=1", "User-Agent: iOS"]                  数组：整串 "Name: Value"
+//
+// 调用方需先用 isJSON 确认输入确实是 JSON；本函数对合法 JSON 总是给出
+// 确定结果（可能为空），不做文本回退。
+func parseJSONHeaders(raw string) []string {
+	// 形态一：JSON 对象，key 是头名、value 是头值
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err == nil {
+		// 用排序保证输出顺序稳定，便于测试和日志比对
+		keys := make([]string, 0, len(obj))
+		for k := range obj {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var out []string
+		for _, k := range keys {
+			v, ok := obj[k].(string)
+			if !ok || strings.TrimSpace(k) == "" {
+				continue
+			}
+			out = append(out, k+": "+v)
+		}
+		return out
+	}
+
+	// 形态二/三：JSON 数组
+	var arr []any
+	if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+		var out []string
+		for _, item := range arr {
+			switch it := item.(type) {
+			case string:
+				// ["Cookie: a=1", ...]：整串是 "Name: Value"，交给文本逻辑归一
+				if hdrs := splitHeaders(it); len(hdrs) > 0 {
+					out = append(out, hdrs...)
+				}
+			case map[string]any:
+				// [{"name":"Cookie","value":"a=1"}, ...]
+				// name/value 字段名做兼容：也接受 key/value、header/value
+				name := jsonStr(it, "name", "key", "header")
+				val := jsonStr(it, "value", "val")
+				if name != "" && val != "" {
+					out = append(out, name+": "+val)
+					continue
+				}
+				// 兼容只有单键的写法：[{"Cookie":"a=1"}]
+				if len(it) == 1 {
+					for k, v := range it {
+						if s, ok := v.(string); ok && strings.TrimSpace(k) != "" {
+							out = append(out, k+": "+s)
+						}
+					}
+				}
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// jsonStr 从 map 里按候选键名依次取字符串值，取到即返回。
+func jsonStr(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// isJSON 判断整串是否是合法 JSON（对象或数组）。
+// 与"首字符是不是 { ["的区别在于：像 {Cookie: a=1} 这种坏 JSON
+// 首字符也满足，但 json.Valid 会否掉，从而回退到文本拆分。
+func isJSON(raw string) bool {
+	return json.Valid([]byte(raw))
 }
 
 // gbkToUtf8 将 GBK 编码转换为 UTF-8 字符串（如果数据已经是 UTF-8 则不转换）

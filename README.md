@@ -118,7 +118,23 @@ POST /download
 | `base-url` | string | | 设置 BaseURL，用于相对路径拼接 |
 | `max-speed` | string | 不限速 | 限速，如 `15M`、`100K` |
 | `thread-count` | int | CPU线程数 | 下载线程数 |
-| `header` | string | | 自定义 HTTP 请求头。多个头用分号/换行分隔，如 `Cookie: a=1; User-Agent: iOS` |
+| `header` | string | | 自定义 HTTP 请求头。支持文本与 JSON 两种写法，见下方说明 |
+
+**自定义请求头 `header` 的写法：**
+
+支持文本和 JSON 两种形式，多个请求头任选一种分隔方式：
+
+| 写法 | 示例 |
+| :--- | :--- |
+| 单个请求头 | `Cookie: auth=secret` |
+| 分号分隔 | `Cookie: auth=secret; User-Agent: iOS` |
+| 换行分隔 | 每行一个请求头 |
+| 官方示例风格 | `-H "Cookie: auth=secret" -H "User-Agent: iOS"` |
+| JSON 对象 | `{"Cookie":"auth=secret","User-Agent":"iOS"}` |
+| JSON 数组 | `[{"name":"Cookie","value":"auth=secret"},{"name":"User-Agent","value":"iOS"}]` |
+
+> 推荐用 JSON 对象写法：请求头值里含分号、引号、冒号时不会被拆坏，
+> 例如 `{"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) ..."}` 中的分号会完整保留。
 
 **合并选项：**
 
