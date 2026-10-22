@@ -434,9 +434,17 @@ func DownloadVideo(c *gin.Context) {
 	// 保存到历史记录
 	addTaskHistory(task, logFilePath, rawParams)
 
+	// N_m3u8DL-RE 的进度条用 \r 原地刷新，攒起来是单行几万字节的文本
+	// （实测可达 96KB+）。bufio.Scanner 默认上限 64KB，超限后 Scan() 直接
+	// 返回 false，读取 goroutine 退出而子进程仍在写管道，最终把管道写满
+	// 导致子进程阻塞——表现为任务"莫名卡死/消失"。
+	// 这里把 buffer 上限提到 1MB。
+	const maxLineBytes = 1 << 20 // 1MB
+
 	// 实时捕获 stdout
 	go func() {
 		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 		for scanner.Scan() {
 			line := stripAnsi(gbkToUtf8(scanner.Bytes()))
 			tasksMu.Lock()
@@ -450,6 +458,7 @@ func DownloadVideo(c *gin.Context) {
 	// 实时捕获 stderr
 	go func() {
 		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 		for scanner.Scan() {
 			line := stripAnsi(gbkToUtf8(scanner.Bytes()))
 			tasksMu.Lock()
