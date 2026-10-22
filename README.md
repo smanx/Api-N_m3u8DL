@@ -58,6 +58,25 @@ docker run --restart=always --name api_m3u8dl \
 | 下载文件保存路径 | `/goApp/data/videos` |
 | 临时文件保存路径 | `/goApp/data/temp_dir` |
 
+**GitHub Container Registry（本仓库自动构建，支持 amd64 / arm64）：**
+
+```shell
+# 拉取镜像（把 <owner> 换成仓库所有者）
+docker pull ghcr.io/<owner>/api-n_m3u8dl:latest
+
+# 启动容器
+docker run --restart=always --name api_m3u8dl \
+  -p 5050:5050 \
+  -v /opt/api_m3u8dl/data:/goApp/data \
+  -v /opt/api_m3u8dl/logs:/goApp/Logs \
+  -d ghcr.io/<owner>/api-n_m3u8dl:latest
+```
+
+镜像由 `.github/workflows/docker-build.yml` 自动构建并推送：推送 `v*` tag 时发布
+`1.2.3` / `1.2` / `1` / `latest` 等标签，也可在 Actions 页面手动触发并附加自定义标签。
+镜像内已内置 N_m3u8DL-RE 与 ffmpeg，`Dockerfile` 顶部的
+`N_M3U8DL_VERSION` 用于指定 N_m3u8DL-RE 版本。
+
 ### 本地编译
 
 ```shell
@@ -345,7 +364,11 @@ GET /version
 ├── process_windows.go   # Windows 进程管理（暂停/恢复/终止/检测）
 ├── process_linux.go     # Linux进程管理
 ├── go.mod / go.sum      # Go 依赖管理
-├── Dockerfile           # Docker 构建文件
+├── Dockerfile           # Docker 构建文件（多架构：amd64 / arm64）
+├── .dockerignore
+├── .github/
+│   └── workflows/
+│       └── docker-build.yml  # 自动构建并推送镜像到 ghcr.io
 ├── templates/
 │   └── index.html       # Web 界面
 ├── static/
