@@ -118,7 +118,7 @@ POST /download
 | `base-url` | string | | 设置 BaseURL，用于相对路径拼接 |
 | `max-speed` | string | 不限速 | 限速，如 `15M`、`100K` |
 | `thread-count` | int | CPU线程数 | 下载线程数 |
-| `header` | string | | 自定义 HTTP 请求头 |
+| `header` | string | | 自定义 HTTP 请求头。多个头用分号/换行分隔，如 `Cookie: a=1; User-Agent: iOS` |
 
 **合并选项：**
 

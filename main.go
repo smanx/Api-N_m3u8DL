@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,6 +30,71 @@ var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 func stripAnsi(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
+}
+
+// splitHeaders 把用户填写的请求头拆成 N_m3u8DL-RE 需要的独立头列表。
+//
+// 背景：N_m3u8DL-RE 的 -H 是"每个头一次"，且值不能带引号：
+//
+//	-H "Cookie: a=1" -H "User-Agent: iOS"
+//
+// 但 Go 的 exec.Command 不做 shell 解析，用户输入没法原样透传。
+// 因此这里接受几种常见写法，统一归一成 []string{"Cookie: a=1", "User-Agent: iOS"}：
+//
+//	Cookie: a=1                                     （推荐，最自然）
+//	Cookie: a=1\nUser-Agent: iOS                    （每行一个）
+//	Cookie: a=1; User-Agent: iOS                    （分号分隔）
+//	-H "Cookie: a=1" -H "User-Agent: iOS"           （照官方示例写，容忍）
+//	-H "Cookie: a=1" -H User-Agent: iOS             （少引号）
+//
+// 归一化规则：
+//   - 按换行 / 分号 / " -H " 拆分成独立的头
+//   - 去掉成对的单/双引号
+//   - 丢掉 "-H" / "--header" 前缀
+//   - 只保留含冒号且看起来像 "Name: Value" 的条目
+func splitHeaders(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+
+	// 先按行/分号拆，再把每段里连续的 -H 拆开（用户可能把多个头写在一行）
+	var out []string
+	for _, chunk := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ';'
+	}) {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
+		}
+		for _, seg := range strings.Split(chunk, " -H ") {
+			seg = strings.TrimSpace(seg)
+			seg = strings.TrimPrefix(seg, "-H")
+			seg = strings.TrimPrefix(seg, "--header")
+			seg = strings.TrimSpace(seg)
+			if seg == "" {
+				continue
+			}
+			// 去掉包裹的引号（成对才去，避免吃掉值里必要的引号）
+			if len(seg) >= 2 {
+				first, last := seg[0], seg[len(seg)-1]
+				if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+					seg = seg[1 : len(seg)-1]
+				}
+			}
+			seg = strings.TrimSpace(seg)
+			// 必须是 "Name: Value" 形态，Name 里不能有空格
+			idx := strings.Index(seg, ":")
+			if idx <= 0 {
+				continue
+			}
+			name := strings.TrimSpace(seg[:idx])
+			if name == "" || strings.ContainsAny(name, " \t") {
+				continue
+			}
+			out = append(out, seg)
+		}
+	}
+	return out
 }
 
 // gbkToUtf8 将 GBK 编码转换为 UTF-8 字符串（如果数据已经是 UTF-8 则不转换）
@@ -294,8 +360,16 @@ func DownloadVideo(c *gin.Context) {
 	if reqData.ThreadCount > 0 {
 		cmd.Args = append(cmd.Args, "--thread-count", fmt.Sprintf("%d", reqData.ThreadCount))
 	}
-	if reqData.Header != "" {
-		cmd.Args = append(cmd.Args, "-H", reqData.Header)
+	if hdrs := splitHeaders(reqData.Header); len(hdrs) > 0 {
+		// N_m3u8DL-RE 要求每个头单独一个 -H，值不能带引号：
+		//   -H "Cookie: a=1" -H "User-Agent: iOS"
+		// 而 exec.Command 不做 shell 解析，不能把用户输入原样透传——否则
+		// 用户按 shell 习惯写的多个 -H 会被当成一个非法头，被 N_m3u8DL-RE
+		// 静默丢弃，表现为"配了请求头却没生效"。
+		// 所以这里先把用户输入拆成独立的头，再逐个追加。
+		for _, h := range hdrs {
+			cmd.Args = append(cmd.Args, "-H", h)
+		}
 	}
 
 	// === 合并参数 ===
